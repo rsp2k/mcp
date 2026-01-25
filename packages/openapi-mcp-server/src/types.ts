@@ -8,4 +8,6 @@ export type API = {
   method: HttpMethod;
   path: string;
   contentType: ContentType;
+  /** Maps sanitized property names to original OpenAPI parameter names */
+  parameterMapping?: Record<string, string>;
 };

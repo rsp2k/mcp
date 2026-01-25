@@ -46,6 +46,23 @@ The name of the services you want to use - this corresponds to the filename http
 
 The tag name as defined in each of the individual endpoints. If you want to filter by `tags` only, make sure you pass `--services ''` as an empty object.
 
+## Parameter Name Mapping
+
+Some Twilio API parameters use special characters (like `<` and `>`) that aren't compatible with certain AI model tool schemas. This MCP server automatically renames these parameters:
+
+| Original Twilio Parameter | MCP Tool Parameter |
+|---------------------------|-------------------|
+| `DateSent<` | `DateSent_before` |
+| `DateSent>` | `DateSent_after` |
+| `DateCreated<` | `DateCreated_before` |
+| `DateCreated>` | `DateCreated_after` |
+| `StartTime<` | `StartTime_before` |
+| `StartTime>` | `StartTime_after` |
+| `EndTime<` | `EndTime_before` |
+| `EndTime>` | `EndTime_after` |
+
+The server automatically converts these back to the original names when calling Twilio's API. When using tools like `ListMessage` or `ListCall`, use the `_before` and `_after` suffixes for date range filtering.
+
 ## Loading Separate APIs
 
 Due to the context size limitation of LLMs and the vast number of APIs available, you need to load separate APIs by passing the `--services/--tags` parameter. For example, to load the `chat_v3` API, you can pass `--services chat_v3`. If you need particular APIs from separate service files, you can use the `--tags` to individually select the endpoints.

@@ -142,6 +142,32 @@ export default class OpenAPIMCPServer {
   }
 
   /**
+   * Maps sanitized property names back to their original OpenAPI names.
+   * This is needed because tool schema property names must match a strict pattern,
+   * but Twilio's OpenAPI specs use characters like `<` and `>` (e.g., `DateSent<`).
+   * @param body the request body with sanitized property names
+   * @param api the API definition containing the parameter mapping
+   * @protected
+   */
+  // eslint-disable-next-line class-methods-use-this
+  protected mapSanitizedToOriginalNames(
+    body: Record<string, unknown>,
+    api: API,
+  ): Record<string, unknown> {
+    const mapping = api.parameterMapping;
+    if (!mapping || Object.keys(mapping).length === 0) {
+      return body;
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(body)) {
+      const originalName = mapping[key] ?? key;
+      result[originalName] = value;
+    }
+    return result;
+  }
+
+  /**
    * Custom hook for extending capabilities
    */
   // eslint-disable-next-line class-methods-use-this
@@ -263,7 +289,10 @@ export default class OpenAPIMCPServer {
       throw new Error(`Tool (${id}) not found: ${name}`);
     }
     const rawBody = request.params.arguments ?? {};
-    const body = this.callToolBody(tool, api, rawBody);
+    const transformedBody = this.callToolBody(tool, api, rawBody);
+
+    // Reverse-map sanitized property names back to original API names
+    const body = this.mapSanitizedToOriginalNames(transformedBody, api);
 
     const httpResponse = await this.makeRequest(id, api, body);
     if (!httpResponse.ok) {

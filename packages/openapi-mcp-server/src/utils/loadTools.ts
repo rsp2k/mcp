@@ -40,6 +40,31 @@ const trimSlashes = (str: string) => {
   return str.replace(/^\/+|\/+$/g, '');
 };
 
+/**
+ * Sanitizes a property name to match the pattern ^[a-zA-Z0-9_.-]{1,64}$
+ * required by Anthropic's API for tool input schema properties.
+ *
+ * Known replacements (Twilio OpenAPI specs):
+ * - `<` → `_before` (e.g., `DateSent<` → `DateSent_before`)
+ * - `>` → `_after` (e.g., `DateSent>` → `DateSent_after`)
+ *
+ * To add support for other characters, extend the replacements below.
+ */
+export const sanitizePropertyName = (name: string): string => {
+  let sanitized = name.replace(/</g, '_before').replace(/>/g, '_after');
+
+  // Fallback: replace any remaining invalid characters with underscores
+  // This ensures we don't break if new special chars appear in specs
+  sanitized = sanitized.replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+  // Truncate to 64 characters if needed
+  if (sanitized.length > 64) {
+    sanitized = sanitized.substring(0, 64);
+  }
+
+  return sanitized;
+};
+
 function toSchema(
   schema: OpenAPIV3.SchemaObject,
   description?: string,
@@ -137,6 +162,7 @@ export default function loadTools(specs: OpenAPISpec[], filters?: ToolFilters) {
               method: method.toUpperCase() as HttpMethod,
               path: `${trimSlashes(baseURL)}/${trimSlashes(path)}`,
               contentType: 'application/json',
+              parameterMapping: {},
             };
 
             if (operation.parameters) {
@@ -144,14 +170,20 @@ export default function loadTools(specs: OpenAPISpec[], filters?: ToolFilters) {
                 .filter((param) => 'name' in param && 'in' in param)
                 .forEach((param) => {
                   const schema = param.schema as OpenAPIV3.SchemaObject;
+                  const sanitizedName = sanitizePropertyName(param.name);
 
-                  tool.inputSchema.properties[param.name] = toSchema(
+                  // Track mapping if name was sanitized
+                  if (sanitizedName !== param.name) {
+                    api.parameterMapping![sanitizedName] = param.name;
+                  }
+
+                  tool.inputSchema.properties[sanitizedName] = toSchema(
                     schema,
                     param.description || `${param.name} parameter`,
                   );
 
                   if (param.required) {
-                    tool.inputSchema.required.push(param.name);
+                    tool.inputSchema.required.push(sanitizedName);
                   }
                 });
             }
@@ -170,13 +202,22 @@ export default function loadTools(specs: OpenAPISpec[], filters?: ToolFilters) {
               const schema = content.schema as OpenAPIV3.SchemaObject;
 
               if (schema.required) {
-                tool.inputSchema.required.push(...schema.required);
+                tool.inputSchema.required.push(
+                  ...schema.required.map(sanitizePropertyName),
+                );
               }
 
               if (schema.properties) {
                 Object.entries(schema.properties).forEach(([key, value]) => {
                   const property = value as OpenAPIV3.SchemaObject;
-                  tool.inputSchema.properties[key] = toSchema(
+                  const sanitizedKey = sanitizePropertyName(key);
+
+                  // Track mapping if name was sanitized
+                  if (sanitizedKey !== key) {
+                    api.parameterMapping![sanitizedKey] = key;
+                  }
+
+                  tool.inputSchema.properties[sanitizedKey] = toSchema(
                     property,
                     property.description ?? `${key} parameter`,
                   );

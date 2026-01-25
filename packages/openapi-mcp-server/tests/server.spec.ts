@@ -516,4 +516,123 @@ describe('OpenAPIMCPServer', () => {
       customServer.testEnsureCapability('prompts');
     }).toThrow('prompts not supported');
   });
+
+  it('should convert sanitized param names to original names in HTTP POST requests', async () => {
+    // This integration test verifies the full round-trip:
+    // Tool called with sanitized names -> HTTP request body uses original names
+    const sanitizedToolId = 'testService--CreateMessage';
+    const sanitizedTool = {
+      name: sanitizedToolId,
+      description: 'Create a message',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          To: { type: 'string', description: 'Recipient' },
+          ValidUntil_before: {
+            type: 'string',
+            description: 'Valid until before',
+          },
+          ValidUntil_after: {
+            type: 'string',
+            description: 'Valid until after',
+          },
+        },
+      },
+    };
+    const sanitizedApi = {
+      path: '/Messages.json',
+      method: 'POST',
+      contentType: 'application/x-www-form-urlencoded',
+      parameterMapping: {
+        ValidUntil_before: 'ValidUntil<',
+        ValidUntil_after: 'ValidUntil>',
+      },
+    };
+
+    (loadTools as Mock).mockReturnValue({
+      tools: new Map([[sanitizedToolId, sanitizedTool]]),
+      apis: new Map([[sanitizedToolId, sanitizedApi]]),
+    });
+
+    class TestServer extends OpenAPIMCPServer {
+      public async testLoad() {
+        await this.load();
+      }
+
+      public async testHandleCallTool(request: any) {
+        return this.handleCallTool(request);
+      }
+    }
+
+    const testServer = new TestServer(mockConfig);
+    await testServer.testLoad();
+
+    const mockHttpResponse = {
+      ok: true,
+      data: { sid: 'SM123' },
+      statusCode: 201,
+    };
+    testServer.http.post = vi.fn().mockResolvedValue(mockHttpResponse);
+
+    // Call tool with SANITIZED parameter names
+    await testServer.testHandleCallTool({
+      params: {
+        name: sanitizedToolId,
+        arguments: {
+          To: '+15551234567',
+          ValidUntil_before: '2024-01-01',
+          ValidUntil_after: '2024-01-31',
+        },
+      },
+    });
+
+    // Verify HTTP POST was called with ORIGINAL parameter names in body
+    expect(testServer.http.post).toHaveBeenCalledWith(
+      '/Messages.json',
+      {
+        To: '+15551234567',
+        'ValidUntil<': '2024-01-01',
+        'ValidUntil>': '2024-01-31',
+      },
+      expect.objectContaining({
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      }),
+    );
+  });
+
+  describe('mapSanitizedToOriginalNames', () => {
+    class TestServer extends OpenAPIMCPServer {
+      public testMapSanitizedToOriginalNames(
+        body: Record<string, unknown>,
+        api: API,
+      ) {
+        return this.mapSanitizedToOriginalNames(body, api);
+      }
+    }
+
+    it('should return body unchanged when no mapping needed', () => {
+      const testServer = new TestServer(mockConfig);
+      const body = { PageSize: 10, AccountSid: 'AC123' };
+      const api: API = { path: '/test', method: 'GET', contentType: 'application/json' };
+
+      // No mapping or empty mapping - body passes through unchanged
+      expect(testServer.testMapSanitizedToOriginalNames(body, api)).toEqual(body);
+      expect(testServer.testMapSanitizedToOriginalNames(body, { ...api, parameterMapping: {} })).toEqual(body);
+    });
+
+    it('should reverse-map sanitized names to original names', () => {
+      const testServer = new TestServer(mockConfig);
+      const result = testServer.testMapSanitizedToOriginalNames(
+        { DateSent_before: '2024-01-01', DateSent_after: '2024-01-31', PageSize: 10 },
+        {
+          path: '/api/messages',
+          method: 'GET',
+          contentType: 'application/json',
+          parameterMapping: { DateSent_before: 'DateSent<', DateSent_after: 'DateSent>' },
+        },
+      );
+
+      expect(result).toEqual({ 'DateSent<': '2024-01-01', 'DateSent>': '2024-01-31', PageSize: 10 });
+    });
+  });
 });

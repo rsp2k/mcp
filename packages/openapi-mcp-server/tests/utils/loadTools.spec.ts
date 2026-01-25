@@ -3,29 +3,29 @@ import { describe, expect, it } from 'vitest';
 
 import { HttpMethod } from '@app/types';
 import { OpenAPISpec } from '@app/utils';
-import loadTools from '@app/utils/loadTools';
+import loadTools, { sanitizePropertyName } from '@app/utils/loadTools';
+
+const createMockSpec = (
+  name: string,
+  paths: Record<string, any>,
+  info: Partial<OpenAPIV3.InfoObject> = {},
+): OpenAPISpec => ({
+  name,
+  service: name,
+  path: `/path/to/${name}.yaml`,
+  document: {
+    openapi: '3.0.0',
+    info: {
+      title: `${name} API`,
+      description: `${name} API description`,
+      version: '1.0.0',
+      ...info,
+    },
+    paths,
+  } as OpenAPIV3.Document,
+});
 
 describe('loadTools', () => {
-  const createMockSpec = (
-    name: string,
-    paths: Record<string, any>,
-    info: Partial<OpenAPIV3.InfoObject> = {},
-  ): OpenAPISpec => ({
-    name,
-    service: name,
-    path: `/path/to/${name}.yaml`,
-    document: {
-      openapi: '3.0.0',
-      info: {
-        title: `${name} API`,
-        description: `${name} API description`,
-        version: '1.0.0',
-        ...info,
-      },
-      paths,
-    } as OpenAPIV3.Document,
-  });
-
   it('should filter specs by service name and version', () => {
     const specs: OpenAPISpec[] = [
       createMockSpec('service1', {
@@ -962,5 +962,109 @@ describe('loadTools', () => {
 
     // Check required fields
     expect(postTool.inputSchema.required).toContain('items');
+  });
+});
+
+describe('sanitizePropertyName', () => {
+  it('should replace < with _before', () => {
+    expect(sanitizePropertyName('DateSent<')).toBe('DateSent_before');
+    expect(sanitizePropertyName('DateCreated<')).toBe('DateCreated_before');
+  });
+
+  it('should replace > with _after', () => {
+    expect(sanitizePropertyName('DateSent>')).toBe('DateSent_after');
+    expect(sanitizePropertyName('DateCreated>')).toBe('DateCreated_after');
+  });
+
+  it('should handle names with both < and >', () => {
+    expect(sanitizePropertyName('Date<>')).toBe('Date_before_after');
+  });
+
+  it('should leave valid names unchanged', () => {
+    expect(sanitizePropertyName('AccountSid')).toBe('AccountSid');
+    expect(sanitizePropertyName('page_size')).toBe('page_size');
+    expect(sanitizePropertyName('api.version')).toBe('api.version');
+    expect(sanitizePropertyName('x-custom-header')).toBe('x-custom-header');
+  });
+
+  it('should replace unknown invalid characters with underscores', () => {
+    expect(sanitizePropertyName('param[0]')).toBe('param_0_');
+    expect(sanitizePropertyName('my param')).toBe('my_param');
+    expect(sanitizePropertyName('foo@bar')).toBe('foo_bar');
+    expect(sanitizePropertyName('test#value')).toBe('test_value');
+  });
+
+  it('should truncate names longer than 64 characters', () => {
+    const longName = 'a'.repeat(70);
+    expect(sanitizePropertyName(longName).length).toBe(64);
+  });
+});
+
+describe('loadTools with sanitized parameter names', () => {
+  it('should sanitize params and request body, populate parameterMapping', () => {
+    const specs: OpenAPISpec[] = [
+      // GET with query params containing angle brackets
+      createMockSpec('twilio_api_v2010', {
+        '/Messages': {
+          get: {
+            operationId: 'ListMessage',
+            parameters: [
+              { name: 'DateSent<', in: 'query', schema: { type: 'string' } },
+              { name: 'DateSent>', in: 'query', schema: { type: 'string' } },
+              { name: 'PageSize', in: 'query', schema: { type: 'integer' } },
+            ],
+          },
+        },
+      }),
+      // POST with request body containing angle brackets
+      createMockSpec('service1', {
+        '/resource': {
+          post: {
+            operationId: 'createResource',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['ValidUntil<'],
+                    properties: {
+                      'ValidUntil<': { type: 'string' },
+                      'ValidUntil>': { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const { tools, apis } = loadTools(specs);
+
+    expect(tools.size).toBe(2);
+    expect(apis.size).toBe(2);
+
+    // Check GET endpoint - query params sanitized
+    const getTool = tools.get('twilio_api_v2010--ListMessage');
+    const getApi = apis.get('twilio_api_v2010--ListMessage');
+    expect(getTool!.inputSchema.properties).toHaveProperty('DateSent_before');
+    expect(getTool!.inputSchema.properties).toHaveProperty('DateSent_after');
+    expect(getTool!.inputSchema.properties).not.toHaveProperty('DateSent<');
+    expect(getApi!.parameterMapping!.DateSent_before).toBe('DateSent<');
+    expect(getApi!.parameterMapping!.DateSent_after).toBe('DateSent>');
+    expect(getApi!.parameterMapping!.PageSize).toBeUndefined();
+
+    // Check POST endpoint - request body sanitized
+    const postTool = tools.get('service1--createResource');
+    const postApi = apis.get('service1--createResource');
+    expect(postTool!.inputSchema.properties).toHaveProperty(
+      'ValidUntil_before',
+    );
+    expect(postTool!.inputSchema.properties).toHaveProperty('ValidUntil_after');
+    expect(postTool!.inputSchema.required).toContain('ValidUntil_before');
+    expect(postTool!.inputSchema.required).not.toContain('ValidUntil<');
+    expect(postApi!.parameterMapping!.ValidUntil_before).toBe('ValidUntil<');
+    expect(postApi!.parameterMapping!.ValidUntil_after).toBe('ValidUntil>');
   });
 });
